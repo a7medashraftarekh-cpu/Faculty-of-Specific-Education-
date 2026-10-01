@@ -1,0 +1,36 @@
+rules_version = '2';
+service cloud.firestore {
+ match /databases/{database}/documents {
+  function signed(){return request.auth!=null;}
+  function me(){return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;}
+  function admin(){return signed()&&me().role=="admin"&&me().status=="approved";}
+  function doctor(){return signed()&&me().role=="doctor"&&me().status=="approved";}
+  function student(){return signed()&&me().role=="student"&&me().status=="approved";}
+  match /users/{id}{
+   allow create: if signed()&&request.auth.uid==id&&request.resource.data.role in ["student","doctor"]&&request.resource.data.status=="pending";
+   allow read: if signed()&&(request.auth.uid==id||admin());
+   allow update,delete: if admin();
+  }
+  match /courses/{id}{allow read: if signed();allow write: if admin();}
+  match /lectures/{id}{
+   allow read: if signed();
+   allow create: if admin()||(doctor()&&request.resource.data.doctorId==request.auth.uid);
+   allow update: if admin()||(doctor()&&resource.data.doctorId==request.auth.uid&&request.resource.data.doctorId==request.auth.uid);
+   allow delete: if admin();
+  }
+  match /attendanceSessions/{id}{
+   allow read: if signed();
+   allow create: if admin()||(doctor()&&request.resource.data.doctorId==request.auth.uid);
+   allow update: if admin()||(doctor()&&resource.data.doctorId==request.auth.uid);
+   allow delete: if admin();
+  }
+  match /attendance/{id}{
+   allow read: if admin()||(doctor()&&resource.data.doctorId==request.auth.uid)||(student()&&resource.data.studentId==request.auth.uid);
+   allow create: if student()&&request.resource.data.studentId==request.auth.uid&&request.resource.data.status=="present";
+   allow update,delete: if admin();
+  }
+  match /notifications/{id}{allow read: if signed()&&(resource.data.userId==request.auth.uid||admin());allow write: if admin()||doctor();}
+  match /settings/{id}{allow read: if signed();allow write: if admin();}
+  match /{document=**}{allow read,write:if false;}
+ }
+}
