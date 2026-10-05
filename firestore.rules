@@ -1,87 +1,36 @@
 rules_version = '2';
 service cloud.firestore {
-  match /databases/{database}/documents {
-
-    function signed() {
-      return request.auth != null;
-    }
-
-    function doctorPath() {
-      return /databases/$(database)/documents/settings/doctor;
-    }
-
-    // الدكتور الوحيد = صاحب الـ uid المسجل في settings/doctor
-    function isDoctor() {
-      return signed() && exists(doctorPath()) && get(doctorPath()).data.uid == request.auth.uid;
-    }
-
-    function userData() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
-    }
-
-    function sessionData(lectureId) {
-      return get(/databases/$(database)/documents/attendanceSessions/$(lectureId)).data;
-    }
-
-    // أول حساب دكتور يتم إعداده يصبح هو الدكتور، ولا يمكن تغييره بعد ذلك
-    match /settings/doctor {
-      allow read: if true;
-      allow create: if signed()
-        && !exists(doctorPath())
-        && request.resource.data.uid == request.auth.uid
-        && request.resource.data.keys().hasOnly(['uid', 'createdAt']);
-      allow update, delete: if false;
-    }
-
-    match /users/{id} {
-      allow read: if signed() && (request.auth.uid == id || isDoctor());
-      allow create: if signed()
-        && request.auth.uid == id
-        && request.resource.data.uid == id
-        && (request.resource.data.role == 'student'
-            || (request.resource.data.role == 'doctor' && isDoctor()));
-      allow update, delete: if false;
-    }
-
-    match /lectures/{id} {
-      allow read, write: if isDoctor();
-    }
-
-    // الـ token سري: الدكتور فقط يقرأه، والتحقق منه يتم داخل القواعد
-    match /attendanceSessions/{id} {
-      allow read, write: if isDoctor();
-    }
-
-    // رقم المستند = lectureId_studentUid، فلا يمكن تسجيل الحضور مرتين
-    match /attendance/{id} {
-      allow get: if isDoctor()
-        || (signed() && (resource == null || resource.data.studentId == request.auth.uid));
-      allow list: if isDoctor()
-        || (signed() && resource.data.studentId == request.auth.uid);
-
-      allow create: if signed()
-        && !isDoctor()
-        && request.resource.data.keys().hasOnly(
-             ['lectureId', 'token', 'studentId', 'studentName', 'studentNumber', 'lectureTitle', 'status', 'createdAt'])
-        && request.resource.data.lectureId is string
-        && id == request.resource.data.lectureId + '_' + request.auth.uid
-        && request.resource.data.studentId == request.auth.uid
-        && request.resource.data.studentName == userData().name
-        && request.resource.data.studentNumber == userData().studentNumber
-        && request.resource.data.lectureTitle is string
-        && request.resource.data.lectureTitle.size() <= 60
-        && request.resource.data.status == 'present'
-        && request.resource.data.createdAt == request.time
-        && sessionData(request.resource.data.lectureId).active == true
-        && sessionData(request.resource.data.lectureId).token == request.resource.data.token
-        && request.time < sessionData(request.resource.data.lectureId).expiresAt;
-
-      allow update: if false;
-      allow delete: if isDoctor();
-    }
-
-    match /{document=**} {
-      allow read, write: if false;
-    }
+ match /databases/{database}/documents {
+  function signed(){return request.auth!=null;}
+  function me(){return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;}
+  function admin(){return signed()&&me().role=="admin"&&me().status=="approved";}
+  function doctor(){return signed()&&me().role=="doctor"&&me().status=="approved";}
+  function student(){return signed()&&me().role=="student"&&me().status=="approved";}
+  match /users/{id}{
+   allow create: if signed()&&request.auth.uid==id&&request.resource.data.role in ["student","doctor"]&&request.resource.data.status=="pending";
+   allow read: if signed()&&(request.auth.uid==id||admin());
+   allow update,delete: if admin();
   }
+  match /courses/{id}{allow read: if signed();allow write: if admin();}
+  match /lectures/{id}{
+   allow read: if signed();
+   allow create: if admin()||(doctor()&&request.resource.data.doctorId==request.auth.uid);
+   allow update: if admin()||(doctor()&&resource.data.doctorId==request.auth.uid&&request.resource.data.doctorId==request.auth.uid);
+   allow delete: if admin();
+  }
+  match /attendanceSessions/{id}{
+   allow read: if signed();
+   allow create: if admin()||(doctor()&&request.resource.data.doctorId==request.auth.uid);
+   allow update: if admin()||(doctor()&&resource.data.doctorId==request.auth.uid);
+   allow delete: if admin();
+  }
+  match /attendance/{id}{
+   allow read: if admin()||(doctor()&&resource.data.doctorId==request.auth.uid)||(student()&&resource.data.studentId==request.auth.uid);
+   allow create: if student()&&request.resource.data.studentId==request.auth.uid&&request.resource.data.status=="present";
+   allow update,delete: if admin();
+  }
+  match /notifications/{id}{allow read: if signed()&&(resource.data.userId==request.auth.uid||admin());allow write: if admin()||doctor();}
+  match /settings/{id}{allow read: if signed();allow write: if admin();}
+  match /{document=**}{allow read,write:if false;}
+ }
 }
