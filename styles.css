@@ -71,7 +71,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   background: var(--brand); color: #fff; font-weight: 700; letter-spacing: .02em;
 }
 form label { display: block; font-weight: 500; font-size: .92rem; margin: .8rem 0; }
-input[type=text], input[type=email], input[type=password], input[type=search], input:not([type]) {
+input[type=text], input[type=email], input[type=tel], input[type=password], input[type=search], input:not([type]) {
   width: 100%; margin-top: .35rem; padding: .75rem .85rem;
   border: 1px solid var(--line); border-radius: 10px; background: #fff;
 }
@@ -140,7 +140,7 @@ button.item:hover { border-color: var(--brand); }
 .item-end { display: flex; flex-direction: column; align-items: flex-end; gap: .25rem; font-size: .9rem; color: var(--muted); }
 .search { margin: 0 0 .8rem; }
 .table-wrap { overflow-x: auto; padding: 0; }
-.table { width: 100%; border-collapse: collapse; min-width: 420px; }
+.table { width: 100%; border-collapse: collapse; min-width: 520px; }
 .table th, .table td { padding: .7rem .9rem; text-align: right; border-bottom: 1px solid var(--line); }
 .table th { background: #f7f9fc; font-size: .88rem; color: var(--muted); font-weight: 500; }
 .table .empty { text-align: center; color: var(--muted); }
@@ -183,5 +183,9 @@ button.item:hover { border-color: var(--brand); }
 /* نافذة اختيار الطالب */
 .sheet { width: min(480px, 100%); max-height: 86vh; display: flex; flex-direction: column; background: var(--card); border-radius: var(--radius); padding: 1.1rem; }
 .sheet .att { flex: 1; max-height: none; min-height: 120px; }
-.primary.small { padding: .35rem .9rem; font-size: .9rem; }
+.primary.small, button.small { padding: .35rem .9rem; font-size: .88rem; white-space: nowrap; }
+.block { display: block; }
 .card .full + .full { margin-top: .5rem; }
+
+.acts { display: flex; gap: .4rem; flex-wrap: wrap; justify-content: flex-end; }
+.card h2 { margin-bottom: .7rem; }

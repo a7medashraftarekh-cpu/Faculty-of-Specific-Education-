@@ -4,7 +4,7 @@ import {
   createUserWithEmailAndPassword, sendPasswordResetEmail, signOut
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js";
 import {
-  getFirestore, doc, getDoc, setDoc, deleteDoc, collection, query, where, orderBy,
+  getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, collection, query, where, orderBy,
   getDocs, onSnapshot, writeBatch, serverTimestamp, Timestamp
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
@@ -38,15 +38,29 @@ function toast(msg) {
 
 function errText(e) {
   const map = {
-    "auth/invalid-credential": "البريد الإلكتروني أو كلمة المرور غير صحيحة",
-    "auth/invalid-email": "صيغة البريد الإلكتروني غير صحيحة",
-    "auth/email-already-in-use": "هذا البريد مستخدم بالفعل",
+    "auth/invalid-credential": "رقم الهاتف أو كلمة المرور غير صحيحة",
+    "auth/invalid-email": "رقم الهاتف غير صحيح",
+    "auth/email-already-in-use": "رقم الهاتف هذا مسجل بالفعل",
     "auth/weak-password": "كلمة المرور ضعيفة، استخدم 6 أحرف على الأقل",
     "auth/network-request-failed": "لا يوجد اتصال بالإنترنت",
     "auth/too-many-requests": "محاولات كثيرة، حاول مرة أخرى بعد قليل",
     "permission-denied": "لا توجد صلاحية لهذه العملية. تأكد من نشر ملف firestore.rules الجديد"
   };
   return map[e?.code] || e?.message || "حدث خطأ غير متوقع";
+}
+
+
+/* ---------- رقم الهاتف ---------- */
+const PHONE_DOMAIN = "@phone.attendance.app";
+const normPhone = v => String(v || "").replace(/[٠-٩]/g, d => "٠١٢٣٤٥٦٧٨٩".indexOf(d)).replace(/[\s\-+()]/g, "");
+const validPhone = p => /^\d{10,15}$/.test(p);
+// الحساب في Firebase يُنشأ بإيميل داخلي مشتق من الرقم، والمستخدم لا يراه
+function loginEmail(v) {
+  v = String(v || "").trim();
+  if (v.includes("@")) return v; // يسمح بدخول حسابات قديمة بالبريد
+  const p = normPhone(v);
+  if (!validPhone(p)) throw new Error("اكتب رقم هاتف صحيح (أرقام فقط)");
+  return p + PHONE_DOMAIN;
 }
 
 function openModal(html) {
@@ -62,6 +76,10 @@ document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal()
 let user = null;
 let profile = null;
 let isDoctor = false;
+let isLeader = false;
+let isStaff = false; // دكتور أو ليدر
+let isMainLeader = false; // أول ليدر يدخل: صلاحيات أعلى من الدكتور
+let mainLeaderId = null;
 let doctorExists = null; // هل تم إعداد حساب الدكتور؟
 let tab = "";
 let registering = false;
@@ -98,14 +116,15 @@ function authScreen(mode = "login") {
     register: "",
     doctor: "هذه الخطوة تتم مرة واحدة فقط. الحساب الذي ينشأ هنا هو الدكتور الوحيد في النظام."
   };
-  const nameField = mode !== "login" ? `<label>الاسم الكامل<input id="fName" autocomplete="name" required></label>` : "";
+  const nameField = mode !== "login"
+    ? `<label>${mode === "register" ? "الاسم الرباعي" : "الاسم الكامل"}<input id="fName" autocomplete="name" ${mode === "register" ? 'placeholder="مثال: أحمد محمد علي حسن"' : ""} required></label>` : "";
   const numField = mode === "register" ? `<label>الرقم الجامعي<input id="fNum" inputmode="numeric" required></label>` : "";
   const submitText = mode === "login" ? "دخول" : "إنشاء الحساب";
+  const phoneAttrs = mode === "login" ? 'type="text"' : 'type="tel" inputmode="tel"';
 
   let links = "";
   if (mode === "login") {
-    links = `<button type="button" class="link" id="forgotBtn">نسيت كلمة المرور؟</button>
-             <button type="button" class="secondary full" id="goRegister">حساب طالب جديد</button>
+    links = `<button type="button" class="secondary full" id="goRegister">حساب طالب جديد</button>
              ${doctorExists === false ? `<button type="button" class="link" id="goDoctor">أنا الدكتور وهذه أول مرة</button>` : ""}`;
   } else {
     links = `<button type="button" class="link" id="goLogin">لدي حساب بالفعل</button>`;
@@ -116,7 +135,7 @@ function authScreen(mode = "login") {
     ${hints[mode] ? `<p class="muted">${hints[mode]}</p>` : ""}
     <form id="authForm">
       ${nameField}${numField}
-      <label>البريد الإلكتروني<input id="fEmail" type="email" autocomplete="email" required></label>
+      <label>رقم الهاتف<input id="fPhone" ${phoneAttrs} autocomplete="username" placeholder="01XXXXXXXXX" required></label>
       <label>كلمة المرور<input id="fPass" type="password" minlength="6" autocomplete="${mode === "login" ? "current-password" : "new-password"}" required></label>
       <button class="primary full" id="authSubmit">${submitText}</button>
     </form>
@@ -128,26 +147,24 @@ function authScreen(mode = "login") {
   if ($("#goRegister")) $("#goRegister").onclick = () => authScreen("register");
   if ($("#goDoctor")) $("#goDoctor").onclick = () => authScreen("doctor");
   if ($("#goLogin")) $("#goLogin").onclick = () => authScreen("login");
-  if ($("#forgotBtn")) $("#forgotBtn").onclick = async () => {
-    const email = $("#fEmail").value.trim();
-    if (!email) { $("#authMsg").textContent = "اكتب بريدك الإلكتروني أولًا"; return; }
-    try { await sendPasswordResetEmail(auth, email); $("#authMsg").textContent = "تم إرسال رابط إعادة تعيين كلمة المرور إلى بريدك"; }
-    catch (e) { $("#authMsg").textContent = errText(e); }
-  };
 }
 
 async function submitAuth(mode) {
   const msg = $("#authMsg"), btn = $("#authSubmit");
-  const email = $("#fEmail").value.trim(), pass = $("#fPass").value;
+  const pass = $("#fPass").value;
   msg.textContent = "";
   btn.disabled = true;
   try {
+    const email = loginEmail($("#fPhone").value);
     if (mode === "login") {
       await signInWithEmailAndPassword(auth, email, pass); // onAuthStateChanged يكمل الباقي
       return;
     }
-    const name = $("#fName").value.trim();
+    const phone = normPhone($("#fPhone").value);
+    if (!validPhone(phone)) throw new Error("اكتب رقم هاتف صحيح (أرقام فقط)");
+    const name = $("#fName").value.trim().replace(/\s+/g, " ");
     if (!name) throw new Error("اكتب الاسم الكامل");
+    if (mode === "register" && name.split(" ").length < 4) throw new Error("اكتب الاسم رباعيًا (أربع كلمات على الأقل)");
 
     registering = true; // يمنع المراقب من تسجيل الخروج قبل إنشاء ملف المستخدم
     const cred = await createUserWithEmailAndPassword(auth, email, pass);
@@ -155,11 +172,11 @@ async function submitAuth(mode) {
     try {
       if (mode === "doctor") {
         await setDoc(doc(db, "settings", "doctor"), { uid, createdAt: serverTimestamp() });
-        await setDoc(doc(db, "users", uid), { uid, name, email, role: "doctor", createdAt: serverTimestamp() });
+        await setDoc(doc(db, "users", uid), { uid, name, phone, email, role: "doctor", status: "approved", createdAt: serverTimestamp() });
         doctorExists = true;
       } else {
         await setDoc(doc(db, "users", uid), {
-          uid, name, email, role: "student",
+          uid, name, phone, email, role: "student", status: "pending",
           studentNumber: $("#fNum").value.trim(),
           createdAt: serverTimestamp()
         });
@@ -184,7 +201,7 @@ onAuthStateChanged(auth, async u => {
   clearLive();
   await stopScanner();
   if (!u) {
-    user = null; profile = null; isDoctor = false;
+    user = null; profile = null; isDoctor = false; isLeader = false; isStaff = false; isMainLeader = false; mainLeaderId = null;
     try {
       doctorExists = (await getDoc(doc(db, "settings", "doctor"))).exists();
     } catch { doctorExists = null; }
@@ -203,7 +220,11 @@ onAuthStateChanged(auth, async u => {
 
 async function enter(u) {
   user = u;
-  const [p, d] = await Promise.all([getDoc(doc(db, "users", u.uid)), getDoc(doc(db, "settings", "doctor"))]);
+  const [p, d, l] = await Promise.all([
+    getDoc(doc(db, "users", u.uid)),
+    getDoc(doc(db, "settings", "doctor")),
+    getDoc(doc(db, "leaders", u.uid))
+  ]);
   if (!p.exists()) {
     authNotice = "هذا الحساب غير مكتمل. أنشئ حسابًا جديدًا أو تواصل مع الدكتور.";
     await signOut(auth);
@@ -212,9 +233,39 @@ async function enter(u) {
   profile = p.data();
   doctorExists = d.exists();
   isDoctor = d.exists() && d.data().uid === u.uid;
+  isLeader = !isDoctor && l.exists();
+  isStaff = isDoctor || isLeader;
+  mainLeaderId = null;
+  isMainLeader = false;
+  if (isStaff) {
+    let m = await getDoc(doc(db, "settings", "mainLeader"));
+    if (!m.exists() && isLeader) {
+      // أول ليدر يدخل يصبح الليدر الرئيسي
+      let claimed = false;
+      try { await setDoc(doc(db, "settings", "mainLeader"), { uid: u.uid, createdAt: serverTimestamp() }); claimed = true; } catch { /* سبقه ليدر آخر */ }
+      if (claimed) {
+        try { await updateDoc(doc(db, "users", u.uid), { status: "approved" }); profile.status = "approved"; } catch { /* غير حرج */ }
+      }
+      m = await getDoc(doc(db, "settings", "mainLeader"));
+    }
+    mainLeaderId = m.exists() ? m.data().uid : null;
+    isMainLeader = isLeader && mainLeaderId === u.uid;
+  }
   $("#userName").textContent = profile.name;
-  $("#userRole").textContent = isDoctor ? "دكتور" : "طالب";
-  tab = isDoctor ? "live" : "scan";
+  $("#userRole").textContent = isDoctor ? "دكتور" : isMainLeader ? "ليدر رئيسي" : isLeader ? "ليدر" : "طالب";
+  if (!isStaff && profile.status !== "approved") {
+    const removed = profile.status === "removed";
+    showApp();
+    $("#tabs").innerHTML = "";
+    setMain(`<div class="card center">
+      <h1>${removed ? "تم إيقاف حسابك" : "حسابك قيد المراجعة"}</h1>
+      <p class="muted">${removed ? "تواصل مع الليدر الرئيسي." : "سيتمكن حسابك من تسجيل الحضور بعد موافقة الليدر الرئيسي."}</p>
+      <button class="primary" id="refreshBtn">تحديث الحالة</button>
+    </div>`);
+    $("#refreshBtn").onclick = () => enter(u).catch(e => toast(errText(e)));
+    return;
+  }
+  tab = isStaff ? "live" : "scan";
   showApp();
   buildTabs();
   render();
@@ -224,7 +275,7 @@ $("#logoutBtn").onclick = () => signOut(auth);
 
 /* ---------- التنقل ---------- */
 function buildTabs() {
-  const items = isDoctor
+  const items = isStaff
     ? [["live", "المحاضرة"], ["lectures", "المحاضرات"], ["students", "الطلاب"]]
     : [["scan", "تسجيل حضور"], ["mine", "حضوري"]];
   $("#tabs").innerHTML = items.map(([k, l]) => `<button data-tab="${k}" ${k === tab ? 'class="active" aria-current="page"' : ""}>${l}</button>`).join("");
@@ -395,7 +446,7 @@ async function manualAdd(lectureId, lec, getRows) {
   let students;
   try {
     const snap = await getDocs(query(collection(db, "users"), where("role", "==", "student")));
-    students = snap.docs.map(d => d.data()).sort((a, b) => a.name.localeCompare(b.name, "ar"));
+    students = snap.docs.map(d => d.data()).filter(s => s.status === "approved").sort((a, b) => a.name.localeCompare(b.name, "ar"));
   } catch (e) { toast(errText(e)); return; }
   if (!students.length) { toast("لا يوجد طلاب مسجلون بعد"); return; }
 
@@ -498,29 +549,113 @@ async function lecturesTab() {
   $$(".item").forEach(b => b.onclick = () => lectureView(b.dataset.id));
 }
 
-/* تبويب "الطلاب": الطلاب المسجلون ونسبة حضورهم */
+/* تبويب "الطلاب": الليدر الرئيسي يقبل الحسابات ويرقّي ويزيل، والباقي يشاهد فقط */
 async function studentsTab() {
-  const [us, as, ls] = await Promise.all([
+  const [us, as, ls, lds] = await Promise.all([
     getDocs(query(collection(db, "users"), where("role", "==", "student"))),
     getDocs(collection(db, "attendance")),
-    getDocs(collection(db, "lectures"))
+    getDocs(collection(db, "lectures")),
+    getDocs(collection(db, "leaders"))
   ]);
   const total = ls.size, counts = {};
+  const leaderIds = new Set(lds.docs.map(d => d.id));
   as.forEach(d => { const k = d.data().studentId; counts[k] = (counts[k] || 0) + 1; });
-  const students = us.docs.map(d => d.data()).sort((a, b) => a.name.localeCompare(b.name, "ar"));
+  const all = us.docs.map(d => d.data()).sort((a, b) => a.name.localeCompare(b.name, "ar"));
+  const statusOf = s => (leaderIds.has(s.uid) ? "approved" : s.status || "pending");
+  const find = uid => all.find(x => x.uid === uid);
 
   setMain(`
-    <h1>الطلاب <small class="muted">(${num(students.length)})</small></h1>
-    <input id="search" class="search" type="search" placeholder="ابحث بالاسم أو الرقم الجامعي">
+    <h1>الطلاب</h1>
+    <div id="pendingBox"></div>
+    <input id="search" class="search" type="search" placeholder="ابحث بالاسم أو الرقم الجامعي أو الهاتف">
     <div class="card table-wrap"><table class="table">
-      <thead><tr><th>الاسم</th><th>الرقم الجامعي</th><th>الحضور</th></tr></thead>
+      <thead><tr><th>الاسم</th><th>الرقم الجامعي</th><th>الحضور</th><th></th></tr></thead>
       <tbody id="rows"></tbody>
-    </table></div>`);
+    </table></div>
+    <div id="removedBox"></div>`);
+
+  const setStatus = async (uid, status, msg) => {
+    try {
+      await updateDoc(doc(db, "users", uid), { status });
+      find(uid).status = status;
+      toast(msg);
+      draw();
+    } catch (e) { toast(errText(e)); }
+  };
+
   const draw = () => {
+    const pending = all.filter(s => statusOf(s) === "pending");
+    const removed = all.filter(s => statusOf(s) === "removed");
+    const approved = all.filter(s => statusOf(s) === "approved");
+    const canPromote = isMainLeader || (isDoctor && !mainLeaderId && leaderIds.size === 0);
+
+    // طلبات قيد المراجعة
+    $("#pendingBox").innerHTML = !pending.length ? "" : isMainLeader
+      ? `<div class="card"><h2>طلبات قيد المراجعة (${num(pending.length)})</h2><div class="list">
+          ${pending.map(s => `<div class="item static">
+            <div><b>${esc(s.name)}</b><small>${esc(s.phone || "")} · ${esc(s.studentNumber || "")}</small></div>
+            <div class="acts"><button class="primary small" data-approve="${esc(s.uid)}">قبول</button><button class="ghost small" data-reject="${esc(s.uid)}">رفض</button></div>
+          </div>`).join("")}</div></div>`
+      : `<div class="card muted">يوجد ${num(pending.length)} طلب بانتظار موافقة الليدر الرئيسي.</div>`;
+
+    // الطلاب المعتمدون
     const k = $("#search").value.trim().toLowerCase();
-    const list = students.filter(s => `${s.name} ${s.studentNumber || ""}`.toLowerCase().includes(k));
-    $("#rows").innerHTML = list.map(s => `<tr><td>${esc(s.name)}</td><td>${esc(s.studentNumber)}</td><td>${num(counts[s.uid] || 0)} من ${num(total)}</td></tr>`).join("")
-      || `<tr><td colspan="3" class="empty">لا يوجد طلاب</td></tr>`;
+    const list = approved.filter(s => `${s.name} ${s.studentNumber || ""} ${s.phone || ""}`.toLowerCase().includes(k));
+    $("#rows").innerHTML = list.map(s => {
+      const lead = leaderIds.has(s.uid);
+      const btns = [];
+      if (lead) {
+        if (isMainLeader && s.uid !== mainLeaderId) btns.push(`<button class="ghost small" data-demote="${esc(s.uid)}">إلغاء ليدر</button>`);
+      } else {
+        if (canPromote) btns.push(`<button class="secondary small" data-promote="${esc(s.uid)}">ترقية لليدر</button>`);
+        if (isMainLeader) btns.push(`<button class="ghost small" data-remove="${esc(s.uid)}">إزالة</button>`);
+      }
+      return `<tr>
+        <td>${esc(s.name)}${lead ? ` <span class="badge ok">${s.uid === mainLeaderId ? "ليدر رئيسي" : "ليدر"}</span>` : ""}<small class="block">${esc(s.phone || "")}</small></td>
+        <td>${esc(s.studentNumber)}</td>
+        <td>${num(counts[s.uid] || 0)} من ${num(total)}</td>
+        <td><div class="acts">${btns.join("")}</div></td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="4" class="empty">لا يوجد طلاب معتمدون</td></tr>`;
+
+    // الحسابات المزالة
+    $("#removedBox").innerHTML = !(isMainLeader && removed.length) ? ""
+      : `<div class="card"><h2>حسابات مزالة (${num(removed.length)})</h2><div class="list">
+          ${removed.map(s => `<div class="item static">
+            <div><b>${esc(s.name)}</b><small>${esc(s.phone || "")}</small></div>
+            <button class="secondary small" data-restore="${esc(s.uid)}">إعادة تفعيل</button>
+          </div>`).join("")}</div></div>`;
+
+    $$("[data-approve]").forEach(b => b.onclick = () => setStatus(b.dataset.approve, "approved", "تم قبول الحساب"));
+    $$("[data-restore]").forEach(b => b.onclick = () => setStatus(b.dataset.restore, "approved", "تمت إعادة التفعيل"));
+    $$("[data-reject]").forEach(b => b.onclick = () => {
+      if (confirm(`رفض حساب ${find(b.dataset.reject).name}؟`)) setStatus(b.dataset.reject, "removed", "تم رفض الحساب");
+    });
+    $$("[data-remove]").forEach(b => b.onclick = () => {
+      if (confirm(`إزالة ${find(b.dataset.remove).name}؟ لن يستطيع تسجيل الحضور بعد ذلك، وتبقى سجلات حضوره القديمة.`)) setStatus(b.dataset.remove, "removed", "تمت إزالة الطالب");
+    });
+    $$("[data-promote]").forEach(b => b.onclick = async () => {
+      const st = find(b.dataset.promote);
+      if (!confirm(`ترقية ${st.name} إلى ليدر؟\nسيحصل على نفس صلاحيات الدكتور (بدء المحاضرات، التحضير، الحذف).`)) return;
+      b.disabled = true;
+      try {
+        await setDoc(doc(db, "leaders", st.uid), { uid: st.uid, name: st.name, promotedBy: user.uid, createdAt: serverTimestamp() });
+        leaderIds.add(st.uid);
+        toast(`تمت ترقية ${st.name} إلى ليدر`);
+        draw();
+      } catch (e) { toast(errText(e)); b.disabled = false; }
+    });
+    $$("[data-demote]").forEach(b => b.onclick = async () => {
+      const st = find(b.dataset.demote);
+      if (!confirm(`إلغاء صلاحيات الليدر عن ${st.name}؟`)) return;
+      b.disabled = true;
+      try {
+        await deleteDoc(doc(db, "leaders", st.uid));
+        leaderIds.delete(st.uid);
+        toast("تم إلغاء الليدر");
+        draw();
+      } catch (e) { toast(errText(e)); b.disabled = false; }
+    });
   };
   $("#search").oninput = draw;
   draw();

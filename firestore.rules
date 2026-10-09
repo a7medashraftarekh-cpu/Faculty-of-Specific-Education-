@@ -15,6 +15,23 @@ service cloud.firestore {
       return signed() && exists(doctorPath()) && get(doctorPath()).data.uid == request.auth.uid;
     }
 
+    // الليدر = طالب تمت ترقيته (له مستند في leaders)
+    function isLeader() {
+      return signed() && exists(/databases/$(database)/documents/leaders/$(request.auth.uid));
+    }
+
+    // الدكتور والليدر لهما نفس الصلاحيات
+    function isStaff() {
+      return isDoctor() || isLeader();
+    }
+
+    // الليدر الرئيسي = أول ليدر دخل الموقع، له صلاحيات أعلى من الدكتور
+    function isMainLeader() {
+      return isLeader()
+        && exists(/databases/$(database)/documents/settings/mainLeader)
+        && get(/databases/$(database)/documents/settings/mainLeader).data.uid == request.auth.uid;
+    }
+
     function userData() {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
@@ -33,32 +50,68 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    match /users/{id} {
-      allow read: if signed() && (request.auth.uid == id || isDoctor());
-      allow create: if signed()
-        && request.auth.uid == id
-        && request.resource.data.uid == id
-        && (request.resource.data.role == 'student'
-            || (request.resource.data.role == 'doctor' && isDoctor()));
+    // أول ليدر يدخل يسجل نفسه هنا مرة واحدة، ولا يمكن تغييره بعد ذلك
+    match /settings/mainLeader {
+      allow read: if isStaff();
+      allow create: if isLeader()
+        && !exists(/databases/$(database)/documents/settings/mainLeader)
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['uid', 'createdAt'])
+        && request.resource.data.createdAt == request.time;
       allow update, delete: if false;
     }
 
-    match /lectures/{id} {
-      allow read, write: if isDoctor();
+    match /users/{id} {
+      allow read: if signed() && (request.auth.uid == id || isStaff());
+      allow create: if signed()
+        && request.auth.uid == id
+        && request.resource.data.uid == id
+        && ((request.resource.data.role == 'student' && request.resource.data.status == 'pending')
+            || (request.resource.data.role == 'doctor' && isDoctor()));
+
+      // الليدر الرئيسي فقط يقبل أو يزيل أو يعيد تفعيل حسابات الطلاب
+      allow update: if isMainLeader()
+        && resource.data.role == 'student'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+        && request.resource.data.status in ['approved', 'removed'];
+      allow delete: if false;
     }
 
-    // الـ token سري: الدكتور فقط يقرأه، والتحقق منه يتم داخل القواعد
+    // الليدر: يرقّيه الليدر الرئيسي فقط ويلغيه هو فقط.
+    // استثناء وحيد: الدكتور يرقّي أول ليدر قبل وجود ليدر رئيسي
+    match /leaders/{id} {
+      allow read: if signed() && (request.auth.uid == id || isStaff());
+      allow create: if signed()
+        && request.resource.data.keys().hasOnly(['uid', 'name', 'promotedBy', 'createdAt'])
+        && request.resource.data.uid == id
+        && request.resource.data.name is string
+        && request.resource.data.promotedBy == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && exists(/databases/$(database)/documents/users/$(id))
+        && get(/databases/$(database)/documents/users/$(id)).data.role == 'student'
+        && ((isMainLeader() && get(/databases/$(database)/documents/users/$(id)).data.status == 'approved')
+            || (isDoctor() && !exists(/databases/$(database)/documents/settings/mainLeader)));
+      allow update: if false;
+      allow delete: if isMainLeader() && id != request.auth.uid;
+    }
+
+    match /lectures/{id} {
+      allow read, write: if isStaff();
+    }
+
+    // الـ token سري: الدكتور والليدر فقط يقرآنه، والتحقق منه يتم داخل القواعد
     match /attendanceSessions/{id} {
-      allow read, write: if isDoctor();
+      allow read, write: if isStaff();
     }
 
     // رقم المستند = lectureId_studentUid، فلا يمكن تسجيل الحضور مرتين
     match /attendance/{id} {
-      allow get: if isDoctor()
+      allow get: if isStaff()
         || (signed() && (resource == null || resource.data.studentId == request.auth.uid));
-      allow list: if isDoctor()
+      allow list: if isStaff()
         || (signed() && resource.data.studentId == request.auth.uid);
 
+      // تسجيل الطالب بمسح الـ QR
       allow create: if signed()
         && !isDoctor()
         && request.resource.data.keys().hasOnly(
@@ -68,6 +121,7 @@ service cloud.firestore {
         && request.resource.data.studentId == request.auth.uid
         && request.resource.data.studentName == userData().name
         && request.resource.data.studentNumber == userData().studentNumber
+        && userData().status == 'approved'
         && request.resource.data.lectureTitle is string
         && request.resource.data.lectureTitle.size() <= 60
         && request.resource.data.status == 'present'
@@ -76,8 +130,8 @@ service cloud.firestore {
         && sessionData(request.resource.data.lectureId).token == request.resource.data.token
         && request.time < sessionData(request.resource.data.lectureId).expiresAt;
 
-      // تحضير يدوي بواسطة الدكتور
-      allow create: if isDoctor()
+      // تحضير يدوي بواسطة الدكتور أو الليدر
+      allow create: if isStaff()
         && request.resource.data.keys().hasOnly(
              ['lectureId', 'studentId', 'studentName', 'studentNumber', 'lectureTitle', 'status', 'manual', 'createdAt'])
         && request.resource.data.lectureId is string
@@ -87,7 +141,7 @@ service cloud.firestore {
         && request.resource.data.createdAt == request.time;
 
       allow update: if false;
-      allow delete: if isDoctor();
+      allow delete: if isStaff();
     }
 
     match /{document=**} {
