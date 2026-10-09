@@ -76,6 +76,16 @@ service cloud.firestore {
         && sessionData(request.resource.data.lectureId).token == request.resource.data.token
         && request.time < sessionData(request.resource.data.lectureId).expiresAt;
 
+      // تحضير يدوي بواسطة الدكتور
+      allow create: if isDoctor()
+        && request.resource.data.keys().hasOnly(
+             ['lectureId', 'studentId', 'studentName', 'studentNumber', 'lectureTitle', 'status', 'manual', 'createdAt'])
+        && request.resource.data.lectureId is string
+        && id == request.resource.data.lectureId + '_' + request.resource.data.studentId
+        && request.resource.data.status == 'present'
+        && request.resource.data.manual == true
+        && request.resource.data.createdAt == request.time;
+
       allow update: if false;
       allow delete: if isDoctor();
     }

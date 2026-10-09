@@ -356,7 +356,9 @@ async function lectureView(id) {
     <section class="card">
       <div class="count-row"><strong id="cnt">٠</strong><span>طالب سجّلوا حضورهم</span></div>
       <ul id="attList" class="att"></ul>
+      <button class="primary full" id="manualBtn">إضافة طالب يدويًا</button>
       <button class="secondary full" id="csvBtn">تنزيل الحضور (Excel / CSV)</button>
+      <button class="danger full" id="delLecBtn">حذف المحاضرة</button>
     </section>`);
 
   if ($("#backBtn")) $("#backBtn").onclick = () => go("lectures");
@@ -384,6 +386,79 @@ async function lectureView(id) {
   }, e => toast(errText(e)));
 
   $("#csvBtn").onclick = () => downloadCsv(lec, rows);
+  $("#manualBtn").onclick = () => manualAdd(id, lec, () => rows);
+  $("#delLecBtn").onclick = () => deleteLecture(id, lec);
+}
+
+/* تحضير طالب يدويًا */
+async function manualAdd(lectureId, lec, getRows) {
+  let students;
+  try {
+    const snap = await getDocs(query(collection(db, "users"), where("role", "==", "student")));
+    students = snap.docs.map(d => d.data()).sort((a, b) => a.name.localeCompare(b.name, "ar"));
+  } catch (e) { toast(errText(e)); return; }
+  if (!students.length) { toast("لا يوجد طلاب مسجلون بعد"); return; }
+
+  openModal(`
+    <div class="sheet" id="sheet">
+      <h2>إضافة طالب يدويًا</h2>
+      <input id="mSearch" class="search" type="search" placeholder="ابحث بالاسم أو الرقم الجامعي">
+      <ul id="mList" class="att pick"></ul>
+      <button class="secondary full" id="mClose">إغلاق</button>
+    </div>`);
+  $("#sheet").onclick = e => e.stopPropagation();
+  $("#mClose").onclick = closeModal;
+
+  const draw = () => {
+    const present = new Set(getRows().map(r => r.studentId));
+    const k = $("#mSearch").value.trim().toLowerCase();
+    const list = students.filter(s => `${s.name} ${s.studentNumber || ""}`.toLowerCase().includes(k));
+    $("#mList").innerHTML = list.map(s => `
+      <li>
+        <div><b>${esc(s.name)}</b><small>${esc(s.studentNumber)}</small></div>
+        ${present.has(s.uid)
+          ? `<span class="badge ok">حاضر</span>`
+          : `<button class="primary small" data-add="${esc(s.uid)}">تحضير</button>`}
+      </li>`).join("") || `<li class="empty">لا توجد نتائج</li>`;
+    $$("[data-add]").forEach(b => b.onclick = async () => {
+      const st = students.find(x => x.uid === b.dataset.add);
+      b.disabled = true;
+      try {
+        await setDoc(doc(db, "attendance", `${lectureId}_${st.uid}`), {
+          lectureId,
+          studentId: st.uid,
+          studentName: st.name,
+          studentNumber: st.studentNumber || "",
+          lectureTitle: String(lec.title).slice(0, 60),
+          status: "present",
+          manual: true,
+          createdAt: serverTimestamp()
+        });
+        toast(`تم تحضير ${st.name}`);
+        setTimeout(draw, 400); // ينتظر وصول التحديث اللحظي
+      } catch (e) { toast(errText(e)); b.disabled = false; }
+    });
+  };
+  $("#mSearch").oninput = draw;
+  draw();
+}
+
+/* حذف المحاضرة مع سجلات حضورها */
+async function deleteLecture(id, lec) {
+  if (!confirm(`حذف "${lec.title}" نهائيًا؟\nسيتم حذف سجلات حضور هذه المحاضرة أيضًا ولا يمكن التراجع.`)) return;
+  try {
+    clearLive();
+    const att = await getDocs(query(collection(db, "attendance"), where("lectureId", "==", id)));
+    const refs = att.docs.map(d => d.ref);
+    refs.push(doc(db, "attendanceSessions", id), doc(db, "lectures", id));
+    for (let i = 0; i < refs.length; i += 400) {
+      const b = writeBatch(db);
+      refs.slice(i, i + 400).forEach(r => b.delete(r));
+      await b.commit();
+    }
+    toast("تم حذف المحاضرة");
+    go(tab === "live" ? "live" : "lectures");
+  } catch (e) { toast(errText(e)); lectureView(id); }
 }
 
 function downloadCsv(lec, rows) {

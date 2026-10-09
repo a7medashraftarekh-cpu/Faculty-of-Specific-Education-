@@ -179,3 +179,9 @@ button.item:hover { border-color: var(--brand); }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* نافذة اختيار الطالب */
+.sheet { width: min(480px, 100%); max-height: 86vh; display: flex; flex-direction: column; background: var(--card); border-radius: var(--radius); padding: 1.1rem; }
+.sheet .att { flex: 1; max-height: none; min-height: 120px; }
+.primary.small { padding: .35rem .9rem; font-size: .9rem; }
+.card .full + .full { margin-top: .5rem; }
