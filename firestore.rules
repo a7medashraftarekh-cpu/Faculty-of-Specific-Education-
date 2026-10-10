@@ -66,6 +66,7 @@ service cloud.firestore {
       allow create: if signed()
         && request.auth.uid == id
         && request.resource.data.uid == id
+        && request.resource.data.keys().hasOnly(['uid', 'name', 'phoneMasked', 'role', 'status', 'studentNumber', 'createdAt'])
         && ((request.resource.data.role == 'student' && request.resource.data.status == 'pending')
             || (request.resource.data.role == 'doctor' && isDoctor()));
 
@@ -75,6 +76,18 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
         && request.resource.data.status in ['approved', 'removed'];
       allow delete: if false;
+    }
+
+    // الرقم الكامل: يقرؤه صاحبه والليدر الرئيسي فقط
+    match /userPrivate/{id} {
+      allow read: if signed() && (request.auth.uid == id || isMainLeader());
+      allow create: if signed()
+        && request.auth.uid == id
+        && request.resource.data.keys().hasOnly(['uid', 'phone'])
+        && request.resource.data.uid == id
+        && request.resource.data.phone is string
+        && request.resource.data.phone.size() <= 15;
+      allow update, delete: if false;
     }
 
     // الليدر: يرقّيه الليدر الرئيسي فقط ويلغيه هو فقط.

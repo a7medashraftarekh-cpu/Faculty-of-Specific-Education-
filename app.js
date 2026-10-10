@@ -54,6 +54,8 @@ function errText(e) {
 const PHONE_DOMAIN = "@phone.attendance.app";
 const normPhone = v => String(v || "").replace(/[٠-٩]/g, d => "٠١٢٣٤٥٦٧٨٩".indexOf(d)).replace(/[\s\-+()]/g, "");
 const validPhone = p => /^\d{10,15}$/.test(p);
+// يُظهر أول رقمين وآخر رقمين فقط
+const maskPhone = v => { const p = normPhone(v); return p.length > 4 ? p.slice(0, 2) + "*".repeat(p.length - 4) + p.slice(-2) : p; };
 // الحساب في Firebase يُنشأ بإيميل داخلي مشتق من الرقم، والمستخدم لا يراه
 function loginEmail(v) {
   v = String(v || "").trim();
@@ -172,14 +174,16 @@ async function submitAuth(mode) {
     try {
       if (mode === "doctor") {
         await setDoc(doc(db, "settings", "doctor"), { uid, createdAt: serverTimestamp() });
-        await setDoc(doc(db, "users", uid), { uid, name, phone, email, role: "doctor", status: "approved", createdAt: serverTimestamp() });
+        await setDoc(doc(db, "users", uid), { uid, name, phoneMasked: maskPhone(phone), role: "doctor", status: "approved", createdAt: serverTimestamp() });
+        await setDoc(doc(db, "userPrivate", uid), { uid, phone });
         doctorExists = true;
       } else {
         await setDoc(doc(db, "users", uid), {
-          uid, name, phone, email, role: "student", status: "pending",
+          uid, name, phoneMasked: maskPhone(phone), role: "student", status: "pending",
           studentNumber: $("#fNum").value.trim(),
           createdAt: serverTimestamp()
         });
+        await setDoc(doc(db, "userPrivate", uid), { uid, phone });
       }
     } catch (e) {
       await cred.user.delete().catch(() => {});
@@ -557,6 +561,13 @@ async function studentsTab() {
     getDocs(collection(db, "lectures")),
     getDocs(collection(db, "leaders"))
   ]);
+  // الأرقام الكاملة يقرأها الليدر الرئيسي فقط؛ غيره يرى الرقم المخفي
+  const priv = {};
+  if (isMainLeader) {
+    try { (await getDocs(collection(db, "userPrivate"))).forEach(d => { priv[d.id] = d.data().phone; }); } catch { /* ignore */ }
+  }
+  const phoneOf = s => isMainLeader ? (priv[s.uid] || s.phone || "") : (s.phoneMasked || (s.phone ? maskPhone(s.phone) : ""));
+  const phoneHtml = s => `<span dir="ltr">${esc(phoneOf(s))}</span>`;
   const total = ls.size, counts = {};
   const leaderIds = new Set(lds.docs.map(d => d.id));
   as.forEach(d => { const k = d.data().studentId; counts[k] = (counts[k] || 0) + 1; });
@@ -593,14 +604,14 @@ async function studentsTab() {
     $("#pendingBox").innerHTML = !pending.length ? "" : isMainLeader
       ? `<div class="card"><h2>طلبات قيد المراجعة (${num(pending.length)})</h2><div class="list">
           ${pending.map(s => `<div class="item static">
-            <div><b>${esc(s.name)}</b><small>${esc(s.phone || "")} · ${esc(s.studentNumber || "")}</small></div>
+            <div><b>${esc(s.name)}</b><small>${phoneHtml(s)} · ${esc(s.studentNumber || "")}</small></div>
             <div class="acts"><button class="primary small" data-approve="${esc(s.uid)}">قبول</button><button class="ghost small" data-reject="${esc(s.uid)}">رفض</button></div>
           </div>`).join("")}</div></div>`
       : `<div class="card muted">يوجد ${num(pending.length)} طلب بانتظار موافقة الليدر الرئيسي.</div>`;
 
     // الطلاب المعتمدون
     const k = $("#search").value.trim().toLowerCase();
-    const list = approved.filter(s => `${s.name} ${s.studentNumber || ""} ${s.phone || ""}`.toLowerCase().includes(k));
+    const list = approved.filter(s => `${s.name} ${s.studentNumber || ""} ${phoneOf(s)}`.toLowerCase().includes(k));
     $("#rows").innerHTML = list.map(s => {
       const lead = leaderIds.has(s.uid);
       const btns = [];
@@ -611,7 +622,7 @@ async function studentsTab() {
         if (isMainLeader) btns.push(`<button class="ghost small" data-remove="${esc(s.uid)}">إزالة</button>`);
       }
       return `<tr>
-        <td>${esc(s.name)}${lead ? ` <span class="badge ok">${s.uid === mainLeaderId ? "ليدر رئيسي" : "ليدر"}</span>` : ""}<small class="block">${esc(s.phone || "")}</small></td>
+        <td>${esc(s.name)}${lead ? ` <span class="badge ok">${s.uid === mainLeaderId ? "ليدر رئيسي" : "ليدر"}</span>` : ""}<small class="block">${phoneHtml(s)}</small></td>
         <td>${esc(s.studentNumber)}</td>
         <td>${num(counts[s.uid] || 0)} من ${num(total)}</td>
         <td><div class="acts">${btns.join("")}</div></td>
@@ -622,7 +633,7 @@ async function studentsTab() {
     $("#removedBox").innerHTML = !(isMainLeader && removed.length) ? ""
       : `<div class="card"><h2>حسابات مزالة (${num(removed.length)})</h2><div class="list">
           ${removed.map(s => `<div class="item static">
-            <div><b>${esc(s.name)}</b><small>${esc(s.phone || "")}</small></div>
+            <div><b>${esc(s.name)}</b><small>${phoneHtml(s)}</small></div>
             <button class="secondary small" data-restore="${esc(s.uid)}">إعادة تفعيل</button>
           </div>`).join("")}</div></div>`;
 
